@@ -1,4 +1,4 @@
-package http_cache
+package simple_server
 
 import (
 	"bufio"
@@ -7,21 +7,46 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 
 	"cloud.google.com/go/storage"
 )
 
+func SimpleServer(w http.ResponseWriter, r *http.Request) {
+	bucketName := os.Getenv("GCS_BUCKET")
+	defaultPrefix := os.Getenv("GCS_PREFIX")
+	indexName := os.Getenv("GCS_INDEX")
+	missingName := os.Getenv("GCS_MISSING")
+	var suppress404 bool = false
+	if os.Getenv("GCS_SUPPRESS404") == "TRUE" {
+		suppress404 = true
+	}
+
+	if bucketName == "" {
+		log.Fatal("Please specify Google Cloud Storage Bucket")
+	}
+
+	client, err := storage.NewClient(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to create a storage client: %s", err)
+	}
+
+	bucketHandler := client.Bucket(bucketName)
+	storageProxy := NewStorageProxy(bucketHandler, defaultPrefix, indexName, missingName, suppress404)
+	storageProxy.Handle(w, r)
+}
+
 type StorageProxy struct {
-	bucketHandler *storage.BucketHandle
+	bucket        *storage.BucketHandle
 	defaultPrefix string
 	indexName     string
 	missingName   string
 	suppress404   bool
 }
 
-func NewStorageProxy(bucketHandler *storage.BucketHandle, defaultPrefix string, indexName string, missingName string, suppress404 bool) *StorageProxy {
+func NewStorageProxy(bucket *storage.BucketHandle, defaultPrefix string, indexName string, missingName string, suppress404 bool) *StorageProxy {
 	return &StorageProxy{
-		bucketHandler: bucketHandler,
+		bucket:        bucket,
 		defaultPrefix: defaultPrefix,
 		indexName:     indexName,
 		missingName:   missingName,
@@ -38,20 +63,20 @@ func (proxy StorageProxy) objectName(name string) string {
 }
 
 func (proxy StorageProxy) Serve(address string, port int64) error {
-	http.HandleFunc("/", proxy.handler)
+	http.HandleFunc("/", proxy.Handle)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", address, port))
 
 	if err == nil {
 		address := listener.Addr().String()
 		listener.Close()
-		log.Printf("Starting http cache server %s\n", address)
+		log.Printf("Starting GCS proxy server %s\n", address)
 		return http.ListenAndServe(address, nil)
 	}
 	return err
 }
 
-func (proxy StorageProxy) handler(w http.ResponseWriter, r *http.Request) {
+func (proxy StorageProxy) Handle(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Path
 	if key[0] == '/' {
 		key = key[1:]
@@ -65,7 +90,7 @@ func (proxy StorageProxy) handler(w http.ResponseWriter, r *http.Request) {
 
 func (proxy StorageProxy) downloadBlob(w http.ResponseWriter, name string) {
 	// log.Printf("requested: %s\n", name)
-	object := proxy.bucketHandler.Object(proxy.objectName(name))
+	object := proxy.bucket.Object(proxy.objectName(name))
 	if object == nil {
 		w.WriteHeader(http.StatusBadGateway)
 		return
@@ -73,7 +98,7 @@ func (proxy StorageProxy) downloadBlob(w http.ResponseWriter, name string) {
 	reader, err := object.NewReader(context.Background())
 	if err != nil {
 		if err.Error() == "storage: object doesn't exist" && proxy.missingName != "" {
-			object = proxy.bucketHandler.Object(proxy.objectName(proxy.missingName))
+			object = proxy.bucket.Object(proxy.objectName(proxy.missingName))
 			reader, err = object.NewReader(context.Background())
 			if !proxy.suppress404 {
 				w.WriteHeader(http.StatusNotFound)
@@ -95,7 +120,7 @@ func (proxy StorageProxy) downloadBlob(w http.ResponseWriter, name string) {
 }
 
 func (proxy StorageProxy) checkBlobExists(w http.ResponseWriter, name string) {
-	object := proxy.bucketHandler.Object(proxy.objectName(name))
+	object := proxy.bucket.Object(proxy.objectName(name))
 	if object == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return

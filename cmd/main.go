@@ -6,8 +6,7 @@ import (
 	"log"
 
 	"cloud.google.com/go/storage"
-	http_cache "github.com/sturtevant/simple-server/proxy"
-	"google.golang.org/api/iterator"
+	simple_server "github.com/sturtevant/simple-server"
 )
 
 func main() {
@@ -37,22 +36,7 @@ func main() {
 	}
 
 	bucketHandler := client.Bucket(bucketName)
-	storageProxy := http_cache.NewStorageProxy(bucketHandler, defaultPrefix, indexName, missingName, suppress404)
-
-	log.Printf("bucket: %s\n", bucketName)
-	bucket := client.Bucket(bucketName)
-	query := &storage.Query{}
-	it := bucket.Objects(context.Background(), query)
-	for {
-		attrs, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.Println(attrs.Name)
-	}
+	storageProxy := simple_server.NewStorageProxy(bucketHandler, defaultPrefix, indexName, missingName, suppress404)
 
 	err = storageProxy.Serve(address, port)
 	if err != nil {
