@@ -109,6 +109,7 @@ func (proxy StorageProxy) downloadBlob(w http.ResponseWriter, name string) {
 			return
 		}
 	}
+	w.Header().Add("Content-Type", reader.Attrs.ContentType)
 	defer reader.Close()
 	bufferedReader := bufio.NewReader(reader)
 	_, err = bufferedReader.WriteTo(w)
